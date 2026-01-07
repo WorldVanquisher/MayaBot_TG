@@ -1,0 +1,31 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+
+# ===== Virtual Env =====
+.venv/
+venv/
+
+# ===== Environment / Secrets =====
+.env
+.env.*
+config.json
+
+# ===== Runtime / Generated =====
+_debug/
+_out/
+*.log
+
+# ===== Database (runtime state) =====
+fortune.db
+
+# ===== OS =====
+.DS_Store
+
+# ===== Test / Scratch =====
+test_*.py
+test.jpg
+
+# ===== IDE =====
+.vscode/
+.idea/
