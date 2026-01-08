@@ -22,8 +22,7 @@ from utils.storage_tos import TosStorage
 log = logging.getLogger("dongzhuo")
 
 ASK_ONE_A, ASK_ONE_B = range(2)
-DEBUG_DIR = Path("_debug")
-DEBUG_DIR.mkdir(exist_ok=True)
+DEBUG_SAVE_IMAGES = False  # disable debug image dumps
 
 storage = TosStorage(prefix="dongzhuo")
 
