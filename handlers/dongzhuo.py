@@ -151,7 +151,7 @@ async def recv_one_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["one_A_url"] = tgfile.file_path
 
     # 本地 debug 备份
-    (DEBUG_DIR / f"dz_A_{int(time.time())}.jpg").write_bytes(data)
+    # (DEBUG_DIR / f"dz_A_{int(time.time())}.jpg").write_bytes(data)
 
     # 从 telegram file_path 猜后缀（大概率 .jpg）
     ext = Path(tgfile.file_path).suffix or ".jpg"
@@ -178,7 +178,7 @@ async def recv_one_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["one_B"] = bts
     context.user_data["one_B_url"] = tgfile.file_path
-    (DEBUG_DIR / f"dz_B_{int(time.time())}.jpg").write_bytes(data)
+    # (DEBUG_DIR / f"dz_B_{int(time.time())}.jpg").write_bytes(data)
 
     ext = Path(tgfile.file_path).suffix or ".jpg"
     try:
