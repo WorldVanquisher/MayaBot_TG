@@ -1,85 +1,104 @@
 # MayaBot – Self-Hosted Telegram Bot
 
+English | [中文](README.zh-CN.md)
+
+---
+
 ## Overview
-MayaBot is a personal, self-hosted Telegram bot designed as a unified interface for interacting with external AI APIs and self-managed infrastructure services.
+MayaBot is a **self-hosted Telegram bot** designed for personal and small-group usage, driven primarily by personal interest and experimentation.
 
-The bot is deployed on a Linux-based NAS using Docker and is intended to evolve incrementally as a long-running personal infrastructure project rather than a single-purpose chatbot.
+It serves as a unified interface for interacting with external APIs and self-managed infrastructure services.  
+The bot is intended to run on a Linux-based NAS and is deployed via Docker.
 
-The primary interaction language of MayaBot is **Chinese**, with most responses, prompts, and generated content optimized for Chinese users and internet culture.
+Rather than being a single-purpose chatbot, MayaBot is designed as a **long-running, incrementally extensible personal infrastructure project**, and also acts as a testbed for validating personal project design ideas.
+
+The primary interaction language of MayaBot is **Chinese**. Command design, prompt construction, and generated content are all optimized for Chinese linguistic context and Chinese internet culture.
+
+---
+
+## Development Notes & Blog (Ongoing)
+
+- [Fixing NAS networking issues: when `ping` works but `curl` fails](https://vanquisher.world/2026/01/09/When-ping-works-but-curl-fails/)
+
+This section documents real-world operational issues encountered during development and self-hosting.
 
 ---
 
 ## Features
-- Modular command and handler architecture for incremental feature expansion
-- Integration with external AI services via isolated adapter modules
-- Chinese-first prompt design and output formatting
-- Long-running, self-hosted deployment optimized for reliability
+- Modular command and handler architecture for rapid and continuous feature expansion  
+- Integration with third-party APIs through isolated adapter modules  
+- Chinese-first output and content generation logic  
+- Designed for stable, long-running self-hosted deployment  
 
-### Representative Capabilities
-- **AI Image Generation (Volcengine / Doubao API)**  
-  MayaBot integrates with Volcengine’s image generation APIs to produce internet-style meme images, including customized meme formats such as **“吕布 / 董卓”梗图**, generated dynamically based on user prompts.
+### Representative Commands
+- **/dongzhuo**  
+  Integrates Volcengine’s image generation API.  
+  User-provided images are uploaded to Volcengine TOS (object storage) to construct an image processing pipeline.  
+  Based on user input, the bot generates a predefined meme template (commonly referred to internally as the *“Dong Zhuo / Lü Bu”* meme).
 
-- **API-Oriented Design**  
-  External services (e.g., AI models, image generation, data services) are accessed through well-defined adapters, allowing services to be replaced or upgraded without affecting core bot logic.
+  This command primarily serves as an experiment in **multi-stage image processing pipelines and meme template abstraction**, rather than as a standalone meme generator.
+
+- **/fortune**  
+  Generates a daily fortune for the user.  
+  Supports limited re-draws when the generated value falls below a predefined threshold.
 
 ---
 
 ## Architecture
-MayaBot follows a modular and decoupled design:
+MayaBot follows a modular and decoupled architecture:
 
 - **Core Layer**
-  - Telegram message polling
-  - Command parsing and routing
-  - Unified error handling and logging
+  - Telegram message polling and dispatch  
+  - Command parsing and routing  
+  - Unified error handling and logging  
 
 - **Feature Modules**
-  - Independent command handlers
-  - AI image generation adapters (Volcengine / Doubao)
-  - Future extensible modules for media, utilities, and personal services
+  - Independent command handlers  
+  - AI image generation module (Volcengine / Doubao)  
+  - Reserved interfaces for future feature expansion  
 
-- **Configuration**
-  - All configuration and secrets are injected via environment variables
-  - No credentials are stored in the codebase
+- **Configuration Management**
+  - All configuration and secrets are injected via environment variables  
+  - No credentials are stored in the codebase  
 
-This architecture allows new features to be added with minimal changes to existing code.
+This design allows new features to be added without modifying the core bot logic.
 
 ---
 
 ## Deployment
 MayaBot is fully containerized using Docker and deployed on a Linux-based NAS.
 
-Deployment principles include:
-- Reproducible environments
-- Service isolation
-- Stability under real-world home network conditions
+Deployment priorities include:
+- Reproducible runtime environments  
+- Isolation between services  
+- Tolerance for unstable or constrained home network conditions  
 
-The bot is designed to run continuously and tolerate intermittent network or API failures.
+The bot is designed to operate continuously and degrade gracefully when encountering network or external API failures.
 
 ---
 
 ## Language & Usage Notes
-- MayaBot is primarily designed for **Chinese-language interaction**
-- Prompts, responses, and meme generation logic assume Chinese linguistic context
-- The project prioritizes practical usability over multilingual completeness
+- MayaBot is primarily designed for **Chinese-speaking users**
+- Prompts, responses, and meme logic assume Chinese linguistic and cultural context
+- Practical usability is prioritized over full multilingual coverage
 
 ---
 
 ## Project Scope
-This project is intentionally scoped as:
+This project is explicitly scoped as:
 - A **personal infrastructure tool**
-- A **learning project** focused on:
+- A learning and experimentation platform focused on:
   - Self-hosted service operation
   - Docker-based deployment
-  - API integration and debugging
-  - Long-term maintainability
+  - Third-party API integration
+  - Long-term maintenance and debugging
 
-It is not intended to be a public SaaS product or a general-purpose chatbot.
+It is **not** intended to be a public SaaS product or a general-purpose chatbot.
 
 ---
 
-## Future Work (Planned)
-- Additional AI-powered content generation modules
-- More meme templates and prompt abstractions
-- Internal service integrations with other self-hosted tools
-- Improved observability and health monitoring
-
+## Future Work
+- Add a music recommendation module with daily song suggestions  
+- Introduce multilingual support to allow usage by non-Chinese speakers  
+- Expose limited NAS storage as a small-scale personal file cloud for trusted users  
+- Continuously refine user experience and add new features driven by personal interest
