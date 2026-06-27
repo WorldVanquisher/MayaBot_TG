@@ -42,6 +42,17 @@ This section documents real-world operational issues encountered during developm
   Generates a daily fortune for the user.  
   Supports limited re-draws when the generated value falls below a predefined threshold.
 
+- **/music**  
+  Searches and downloads audio from YouTube via an embedded `yt-dlp` + `ffmpeg` pipeline.  
+  Accepts either keywords or a direct link; search results are listed as inline buttons, and the selected track is delivered as an audio file with embedded metadata and cover art.  
+  Each download and search is persisted per user as a signal for the recommendation engine.
+
+- **/randommusic**  
+  Personalized song recommendation.  
+  Builds seeds from the user's download history, search keywords, and learned artist preferences, then ranks candidates with weighted random sampling (so repeated calls vary).  
+  Recommendations are delivered as audio with 👍 / 👎 feedback buttons: 👍 boosts that artist's weight, 👎 deletes the message and lowers it.  
+  Manual calls return **1 track**; `/randommusic on|off` toggles a daily push (**3 tracks** at 08:00 Beijing time).
+
 ---
 
 ## Architecture
@@ -55,11 +66,13 @@ MayaBot follows a modular and decoupled architecture:
 - **Feature Modules**
   - Independent command handlers  
   - AI image generation module (Volcengine / Doubao)  
+  - Music fetching & recommendation module (`yt-dlp` + `ffmpeg`, per-user SQLite persistence)  
   - Reserved interfaces for future feature expansion  
 
 - **Configuration Management**
   - All configuration and secrets are injected via environment variables  
   - No credentials are stored in the codebase  
+  - Per-user data (download history, preferences, subscriptions) persisted in a mounted SQLite volume  
 
 This design allows new features to be added without modifying the core bot logic.
 
@@ -98,7 +111,7 @@ It is **not** intended to be a public SaaS product or a general-purpose chatbot.
 ---
 
 ## Future Work
-- Add a music recommendation module with daily song suggestions  
+- Add SoundCloud as a download/recommendation source (pending a stable extraction handler)  
 - Introduce multilingual support to allow usage by non-Chinese speakers  
 - Expose limited NAS storage as a small-scale personal file cloud for trusted users  
 - Continuously refine user experience and add new features driven by personal interest
