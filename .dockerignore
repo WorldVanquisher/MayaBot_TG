@@ -1,0 +1,31 @@
+# 密钥 / 运行时配置 —— 绝不打进镜像，运行时挂载注入
+.env
+.env.*
+config.json
+fortune.db
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 运行时 / 生成物
+_debug/
+_out/
+*.log
+
+# 测试 / 草稿
+test_*.py
+test.jpg
+tri_panel_layout.png
+
+# VCS / IDE / OS
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+
+# 文档（运行时用不到）
+README*.md

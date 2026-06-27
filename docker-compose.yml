@@ -1,0 +1,37 @@
+# mayabot 部署编排
+#
+#   docker compose up --build -d        # 构建并后台启动
+#   docker compose logs -f mayabot      # 看日志
+#   docker compose down                 # 停止
+#
+# 前置条件（这两个文件不在镜像里，运行时注入）：
+#   .env          —— BOT_TOKEN 及各类 API 密钥（见 .env）
+#   config.json   —— 应用配置（image_api / comic / music 段）
+
+services:
+  mayabot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mayabot:local
+    container_name: mayabot
+    restart: unless-stopped
+
+    # 密钥从 .env 注入容器环境（python-dotenv 也会读，双保险）
+    env_file:
+      - .env
+
+    environment:
+      TZ: "Asia/Shanghai"
+
+    volumes:
+      # 运行时配置：改完无需重建镜像
+      - ./config.json:/app/config.json:ro
+      # 签到数据库：持久化，重建容器不丢
+      - ./fortune.db:/app/fortune.db
+      # 抓歌/推荐数据库：下载历史、偏好权重、订阅、推荐记录
+      - ./music.db:/app/music.db
+      # 调试/产物输出（可选，便于排查）
+      - ./_debug:/app/_debug
+
+    # polling bot，无端口暴露
