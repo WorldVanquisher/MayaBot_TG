@@ -1,10 +1,17 @@
 # mayabot —— Telegram bot（python-telegram-bot, polling 模式）
 # 单进程，无 web 端口；含抓歌功能（yt-dlp + ffmpeg）。
 
+# yt-dlp 需要 JavaScript 运行时来处理 YouTube 的播放器挑战。
+# 使用官方 Deno 镜像提供单文件运行时，避免在最终镜像中引入完整 Node.js。
+FROM denoland/deno:bin-2.9.0 AS deno
+
 FROM python:3.12-slim
+
+COPY --from=deno /deno /usr/local/bin/deno
 
 # 系统依赖：
 #   ffmpeg   —— yt-dlp 抽取/转码音频、嵌入封面所需
+#   deno     —— yt-dlp 处理 YouTube JavaScript 播放器挑战所需
 #   tzdata   —— fortune.py 使用 Asia/Shanghai 时区，slim 镜像默认无 tzdata
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \

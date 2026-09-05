@@ -27,4 +27,6 @@ typing_extensions==4.15.0
 urllib3==2.5.0
 volcengine-python-sdk==4.0.33
 wrapt==2.0.1
-yt-dlp==2026.6.9
+# [default] 会同时安装与当前 yt-dlp 版本匹配的 EJS challenge scripts；
+# 配合镜像中的 Deno，避免 YouTube 媒体地址因未完成 JS challenge 返回 403。
+yt-dlp[default]==2026.8.19
