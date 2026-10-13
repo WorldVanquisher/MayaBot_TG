@@ -114,6 +114,36 @@ def init_db() -> None:
         """)
         con.commit()
 
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS audio_cache (
+            cache_key TEXT PRIMARY KEY, file_id TEXT NOT NULL,
+            title TEXT, artist TEXT, duration REAL, updated_at TEXT
+        )
+        """)
+        con.commit()
+
+
+def get_audio_cache(key: str) -> Optional[Dict[str, Any]]:
+    with sqlite3.connect(DB_PATH) as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute("SELECT * FROM audio_cache WHERE cache_key=?", (key,)).fetchone()
+        return dict(row) if row else None
+
+
+def set_audio_cache(key: str, info: Dict[str, Any]) -> None:
+    with sqlite3.connect(DB_PATH) as con:
+        con.execute("""INSERT INTO audio_cache VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET file_id=excluded.file_id,
+            title=excluded.title, artist=excluded.artist, duration=excluded.duration,
+            updated_at=excluded.updated_at""",
+            (key, info["file_id"], info.get("title"), info.get("artist"),
+             info.get("duration"), now_iso()))
+
+
+def delete_audio_cache(key: str) -> None:
+    with sqlite3.connect(DB_PATH) as con:
+        con.execute("DELETE FROM audio_cache WHERE cache_key=?", (key,))
+
 
 # ── 写入：下载 / 搜索 ────────────────────────────────────────────────────────
 

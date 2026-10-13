@@ -2,6 +2,8 @@
 import os
 import logging
 from telegram.ext import ApplicationBuilder
+from telegram.request import HTTPXRequest
+from utils.music_service import start_service, stop_service
 
 # === Handlers ===
 # legacy 版本（仍可用）：/dokaku
@@ -39,7 +41,10 @@ def main():
     fortune_setup()
     recommend_setup()   # 初始化 music.db（下载历史/偏好/订阅/推荐记录）
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = (ApplicationBuilder().token(TOKEN)
+           .request(HTTPXRequest(connection_pool_size=16, media_write_timeout=120,
+                                 read_timeout=30, connect_timeout=15, pool_timeout=10))
+           .post_init(start_service).post_stop(stop_service).build())
 
     # 注册各模块
     fortune_register(app)   # /start /fortune

@@ -16,8 +16,7 @@
 import json
 import asyncio
 import logging
-import tempfile
-import shutil
+import html
 import datetime as dt
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -32,14 +31,13 @@ from telegram.ext import (
 )
 
 from utils import music_db, recommend as rec_engine
-from utils.music_fetch import download_audio, check_environment
+from utils.music_fetch import check_environment
+from utils.music_service import MusicBusy, get_service
 
 log = logging.getLogger("recommend")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = PROJECT_ROOT / "config.json"
-
-_TG_AUDIO_LIMIT = 50 * 1024 * 1024  # Telegram 普通 bot 上传上限 50MB
 
 try:
     from zoneinfo import ZoneInfo
@@ -88,7 +86,7 @@ def _feedback_markup(rec_id: int) -> InlineKeyboardMarkup:
 
 async def _send_one_recommendation(
     bot, user_id: int, chat_id: int, candidate: Dict[str, Any],
-    mention: bool = False,
+    mention: bool = False, service=None,
 ) -> bool:
     """
     下载候选并以「推荐」形式发到 chat（带 👍/👎 按钮）。
@@ -106,35 +104,18 @@ async def _send_one_recommendation(
         video_id=candidate.get("video_id") or "", url=url,
     )
 
-    tmp_dir = Path(tempfile.mkdtemp(prefix="mayabot_rec_"))
     try:
-        info = await asyncio.to_thread(download_audio, url, tmp_dir)
-        audio_path: Path = info["path"]
-
-        if audio_path.stat().st_size > _TG_AUDIO_LIMIT:
-            log.warning("推荐曲目超 50MB，跳过：%s", title)
-            return False
-
         caption_lines = ["🎵 今日推荐" if mention else "🎵 为你推荐"]
         if mention:
             # 仅凭 user_id 即可 @ 到人（客户端会自动显示其名字）。
             caption_lines[0] = f'🎵 <a href="tg://user?id={user_id}">点歌给你</a>'
-        caption_lines.append(f"{info.get('title') or title} — {info.get('artist') or artist}")
+        caption_lines.append(f"{html.escape(title)} — {html.escape(artist)}")
         caption_lines.append("喜欢点 👍；不喜欢点 👎（将撤回此条并减少同类推荐）")
         caption = "\n".join(caption_lines)
 
-        with open(audio_path, "rb") as fh:
-            msg = await bot.send_audio(
-                chat_id=chat_id,
-                audio=fh,
-                title=info.get("title") or title,
-                performer=info.get("artist") or artist or None,
-                duration=int(info["duration"]) if info.get("duration") else None,
-                filename=audio_path.name,
-                caption=caption,
-                parse_mode=ParseMode.HTML,
-                reply_markup=_feedback_markup(rec_id),
-            )
+        msg, _ = await service.send_audio(
+            bot, url, chat_id=chat_id, caption=caption,
+            parse_mode=ParseMode.HTML, reply_markup=_feedback_markup(rec_id))
         # 回填消息坐标，供 👎 撤回。
         music_db.set_recommendation_message(rec_id, chat_id, msg.message_id)
         return True
@@ -142,8 +123,6 @@ async def _send_one_recommendation(
     except Exception as e:
         log.error("推荐下载/发送失败 [%s]: %s", title, e)
         return False
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # ── /randommusic ────────────────────────────────────────────────────────────
@@ -176,7 +155,17 @@ async def cmd_randommusic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _safe_reply(update, "服务端缺少 yt-dlp / ffmpeg，无法推荐。")
         return
 
-    await _safe_reply(update, "正在为你挑一首…")
+    service = get_service(context.application)
+    try:
+        service.submit(user.id, lambda: _manual_recommendation(update, context))
+    except MusicBusy as exc:
+        await _safe_reply(update, str(exc))
+        return
+    await _safe_reply(update, "推荐任务已接收，正在为你挑歌…")
+
+
+async def _manual_recommendation(update, context):
+    user, chat = update.effective_user, update.effective_chat
     try:
         cands = await asyncio.to_thread(rec_engine.recommend, user.id, 1)
     except Exception as e:
@@ -189,7 +178,8 @@ async def cmd_randommusic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     ok = await _send_one_recommendation(
-        context.bot, user.id, chat.id, cands[0], mention=False
+        context.bot, user.id, chat.id, cands[0], mention=False,
+        service=get_service(context.application)
     )
     if not ok:
         await _safe_reply(update, "这首下载失败了，稍后再试试 /randommusic。")
@@ -263,19 +253,27 @@ async def _daily_push_job(context: ContextTypes.DEFAULT_TYPE):
         return
     log.info("每日推送：%d 个订阅会话", len(subs))
 
+    service = get_service(context.application)
     for user_id, chat_id in subs:
+        async def generate(uid=user_id):
+            return await asyncio.to_thread(rec_engine.recommend, uid, count)
         try:
-            cands = await asyncio.to_thread(rec_engine.recommend, user_id, count)
-        except Exception as e:
-            log.warning("每日推送 recommend 失败 user=%s: %s", user_id, e)
+            cands = await service.submit(user_id, generate, priority=1)
+        except MusicBusy:
+            log.info("每日推送：用户忙或队列满，跳过订阅")
             continue
-        if not cands:
+        except Exception as exc:
+            log.warning("每日推送推荐失败 type=%s", type(exc).__name__)
             continue
         for cand in cands:
-            await _send_one_recommendation(
-                context.bot, user_id, chat_id, cand, mention=True
-            )
-            await asyncio.sleep(gap)  # 间隔下载，缓解限流
+            async def send(uid=user_id, cid=chat_id, candidate=cand):
+                return await _send_one_recommendation(
+                    context.bot, uid, cid, candidate, mention=True, service=service)
+            try:
+                await service.submit(user_id, send, priority=1)
+            except MusicBusy:
+                log.info("每日推送：用户忙或队列满，跳过曲目")
+            await asyncio.sleep(gap)
 
 
 # ── 注册 ───────────────────────────────────────────────────────────────────

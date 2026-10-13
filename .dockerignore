@@ -3,6 +3,10 @@
 .env.*
 config.json
 fortune.db
+music.db
+*.db-wal
+*.db-shm
+tests/
 
 # Python
 __pycache__/

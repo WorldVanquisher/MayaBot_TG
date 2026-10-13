@@ -13,6 +13,9 @@ import json
 import shutil
 import logging
 import subprocess
+import os
+import signal
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -24,6 +27,10 @@ except Exception:
     pass
 
 log = logging.getLogger("music_fetch")
+
+
+class MusicRejected(RuntimeError):
+    """A source rejected by configured duration/live/file-size limits."""
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = PROJECT_ROOT / "config.json"
@@ -40,11 +47,17 @@ _DEFAULTS: Dict[str, Any] = {
     "provider": "youtube",       # 默认搜索源
     "max_results": 5,            # 搜索返回条数
     "audio_format": "mp3",       # 下载音频格式
-    "audio_quality": "0",        # 0 = 最佳
+    "audio_quality": "192K",     # 固定码率，控制上传体积
     "ytdlp_bin": "yt-dlp",       # yt-dlp 可执行文件（PATH 上）
     "proxy": "",                 # 可选代理，例如 http://127.0.0.1:1080
     "search_timeout": 60,        # 搜索子进程超时（秒）
     "download_timeout": 600,     # 下载子进程超时（秒）
+    "concurrency": 4,            # 2 / 4 路验收通过；8 路留作后续验证
+    "queue_size": 16,
+    "download_budget_bps": 1048576,  # 所有 worker 合计约 1 MiB/s
+    "max_duration_sec": 1200,
+    "max_audio_bytes": 48000000,
+    "ffmpeg_threads": 1,
 }
 
 
@@ -65,6 +78,34 @@ def _load_music_cfg() -> Dict[str, Any]:
 def _search_prefix(provider: Optional[str]) -> str:
     """provider → yt-dlp 搜索前缀，未知值回落到 ytsearch。"""
     return _SEARCH_PREFIXES.get((provider or "youtube").strip().lower(), "ytsearch")
+
+
+def _run_process(cmd, timeout, cancel_event=None):
+    """Bound lifetime and kill the entire yt-dlp/ffmpeg process group on timeout."""
+    if os.name == "posix" and shutil.which("nice"):
+        cmd = ["nice", "-n", "10", *cmd]
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, errors="replace", start_new_session=True) as proc:
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("下载已取消")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+                try:
+                    stdout, stderr = proc.communicate(timeout=min(0.25, remaining))
+                    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+                except subprocess.TimeoutExpired:
+                    continue
+        except BaseException:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.communicate()
+            raise
 
 
 # ── 环境检测 ────────────────────────────────────────────────────────────────
@@ -110,20 +151,20 @@ def search_media(
     prefix = _search_prefix(provider)
     cmd = [
         cfg["ytdlp_bin"], "--dump-json", "--flat-playlist",
+        "--socket-timeout", "15", "--extractor-retries", "2",
         f"{prefix}{limit}:{query}",
     ]
     if cfg.get("proxy"):
         cmd += ["--proxy", cfg["proxy"]]
 
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True,
-            errors="replace", timeout=int(cfg["search_timeout"]),
-        )
+        result = _run_process(cmd, int(cfg["search_timeout"]))
     except Exception as e:
         raise RuntimeError(f"搜索失败: {e}")
 
     results: List[Dict[str, Any]] = []
+    if result.returncode and not result.stdout.strip():
+        raise RuntimeError("搜索源暂时不可用，请稍后再试。")
     for line in result.stdout.splitlines():
         try:
             entry = json.loads(line)
@@ -172,7 +213,7 @@ def _is_valid_audio(path: Path) -> bool:
             "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1", str(path),
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        res = _run_process(cmd, 15)
         return res.returncode == 0 and bool(res.stdout.strip())
     except Exception:
         return False
@@ -182,6 +223,7 @@ def download_audio(
     url: str,
     dest_dir: Path,
     provider: Optional[str] = None,
+    *, cfg: Optional[Dict[str, Any]] = None, cancel_event=None,
 ) -> Dict[str, Any]:
     """
     把单个 URL 下载为带元数据 + 封面的音频文件。
@@ -197,46 +239,42 @@ def download_audio(
 
     失败时抛出 RuntimeError。
     """
-    cfg = _load_music_cfg()
+    cfg = cfg or _load_music_cfg()
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    # 先抓单条元数据（非 flat），拿到 title/uploader/duration/thumbnail，
-    # 也用于把 uploader 作为 artist 兜底（SoundCloud / YouTube 常缺规范 artist）。
+    # 下载时同时写元数据，避免为同一 URL 做第二次提取/播放器挑战。
     meta: Dict[str, Any] = {}
-    try:
-        meta_cmd = [cfg["ytdlp_bin"], "--dump-single-json", "--no-playlist", url]
-        if cfg.get("proxy"):
-            meta_cmd += ["--proxy", cfg["proxy"]]
-        mres = subprocess.run(
-            meta_cmd, capture_output=True, text=True,
-            errors="replace", timeout=int(cfg["search_timeout"]),
-        )
-        if mres.returncode == 0 and mres.stdout.strip():
-            meta = json.loads(mres.stdout)
-    except Exception as e:
-        log.warning("元数据预取失败（不影响下载）: %s", e)
 
     audio_fmt = cfg["audio_format"]
-    output_tpl = str(dest_dir / "%(title)s.%(ext)s")
+    output_tpl = str(dest_dir / "%(id)s.%(ext)s")
     cmd = [
         cfg["ytdlp_bin"], "--no-playlist",
         "-x", "--audio-format", audio_fmt,
         "--audio-quality", str(cfg["audio_quality"]),
+        "-f", "bestaudio/best", "--write-info-json",
+        "--socket-timeout", "20", "--retries", "2", "--fragment-retries", "2",
+        "--extractor-retries", "2", "--concurrent-fragments", "1",
+        "--max-filesize", str(int(cfg["max_audio_bytes"])),
+        "--match-filters", f"!is_live & duration <= {int(cfg['max_duration_sec'])}",
+        "--postprocessor-args", f"ffmpeg:-threads {int(cfg['ffmpeg_threads'])}",
+        "--convert-thumbnails", "jpg",
+        "--postprocessor-args", "ThumbnailsConvertor+ffmpeg_o:-vf "
+        "scale=512:512:force_original_aspect_ratio=decrease -q:v 4 -threads 1",
         "--no-mtime", "--no-overwrites", "--no-part",
         "--add-metadata", "--embed-thumbnail",
         "--output", output_tpl,
     ]
     if cfg.get("proxy"):
         cmd += ["--proxy", cfg["proxy"]]
+    rate = int(cfg.get("download_rate_bps") or
+               int(cfg["download_budget_bps"]) // max(1, int(cfg["concurrency"])))
+    cmd += ["--limit-rate", str(max(1, rate))]
     cmd.append(url)
 
     before = set(dest_dir.iterdir())
     try:
-        res = subprocess.run(
-            cmd, capture_output=True, text=True,
-            errors="replace", timeout=int(cfg["download_timeout"]),
-        )
+        res = _run_process(cmd, int(cfg["download_timeout"]), cancel_event)
     except Exception as e:
         _cleanup_partials(dest_dir, before)
         raise RuntimeError(f"下载执行失败: {e}")
@@ -259,7 +297,18 @@ def download_audio(
             f.unlink(missing_ok=True)
 
     if not valid:
+        if "does not pass filter" in res.stdout:
+            raise MusicRejected(f"仅支持 {int(cfg['max_duration_sec']) // 60} 分钟以内、时长已知的非直播曲目。")
+        if "larger than max-filesize" in res.stdout + res.stderr:
+            raise MusicRejected("源音频超过大小限制，请选择较短曲目。")
         raise RuntimeError("下载完成但未得到有效音频文件")
+
+    for metadata_file in dest_dir.glob("*.info.json"):
+        try:
+            meta = json.loads(metadata_file.read_text(encoding="utf-8"))
+            break
+        except (OSError, ValueError):
+            continue
 
     path = valid[0]
     uploader = meta.get("uploader") or meta.get("channel") or ""

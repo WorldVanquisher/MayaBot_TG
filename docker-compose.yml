@@ -16,6 +16,10 @@ services:
     image: mayabot:local
     container_name: mayabot
     restart: unless-stopped
+    # Leave CPU and memory for the other services on this shared host.
+    cpus: 2.0
+    mem_limit: 1g
+    stop_grace_period: 45s
 
     # 密钥从 .env 注入容器环境（python-dotenv 也会读，双保险）
     env_file:

@@ -18,6 +18,9 @@ _out/
 
 # ===== Database (runtime state) =====
 fortune.db
+music.db
+*.db-wal
+*.db-shm
 
 # ===== OS =====
 .DS_Store
@@ -29,3 +32,4 @@ test.jpg
 # ===== IDE =====
 .vscode/
 .idea/
+!tests/test_*.py

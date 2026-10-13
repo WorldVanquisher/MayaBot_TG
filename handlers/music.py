@@ -16,9 +16,8 @@ UI 交互细节（结果展示形式、是否支持切换源、分页等）后�
 """
 import asyncio
 import logging
-import tempfile
-import shutil
-from pathlib import Path
+import secrets
+import time
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -30,16 +29,13 @@ from telegram.ext import (
 
 from utils.music_fetch import (
     search_media,
-    download_audio,
     check_environment,
     _load_music_cfg,
 )
 from utils import music_db
+from utils.music_service import MusicBusy, get_service
 
 log = logging.getLogger("music")
-
-# Telegram bot 上传上限：普通 bot 50MB。
-_TG_AUDIO_LIMIT = 50 * 1024 * 1024
 
 # 搜索结果暂存在 user_data 的键。
 _RESULTS_KEY = "music_results"
@@ -84,8 +80,17 @@ async def cmd_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _safe_reply(update, "服务端缺少 ffmpeg，无法转码音频。")
         return
 
-    cfg = _load_music_cfg()
-    await _safe_reply(update, f"搜索中（{cfg['provider']}）…")
+    service = get_service(context.application)
+    try:
+        service.submit(update.effective_user.id,
+                       lambda: _search_and_reply(update, context, query))
+    except MusicBusy as exc:
+        await _safe_reply(update, str(exc))
+        return
+    await _safe_reply(update, "搜索任务已接收…")
+
+
+async def _search_and_reply(update, context, query):
 
     try:
         results = await asyncio.to_thread(search_media, query)
@@ -108,7 +113,16 @@ async def cmd_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log.warning("record_search failed: %s", e)
 
     # 存结果，callback_data 只带索引（Telegram 限 64 字节，放不下 URL）。
-    context.user_data[_RESULTS_KEY] = results
+    now = time.monotonic()
+    sessions = context.user_data.setdefault(_RESULTS_KEY, {})
+    expired = [key for key, session in sessions.items() if now - session["created"] > 600]
+    for key in expired:
+        sessions.pop(key, None)
+    while len(sessions) >= 5:
+        sessions.pop(next(iter(sessions)))
+    token = secrets.token_hex(4)
+    sessions[token] = {"results": results, "created": now,
+                       "chat_id": update.effective_chat.id}
 
     buttons = []
     for i, r in enumerate(results):
@@ -122,7 +136,7 @@ async def cmd_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 按钮文字过长会被 Telegram 截断，这里手动限长更可控。
         if len(label) > 60:
             label = label[:57] + "…"
-        buttons.append([InlineKeyboardButton(label, callback_data=f"MUSIC_DL:{i}")])
+        buttons.append([InlineKeyboardButton(label, callback_data=f"MUSIC_DL:{token}:{i}")])
 
     await _safe_reply(
         update,
@@ -140,12 +154,17 @@ async def cb_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     try:
-        idx = int((query.data or "").split(":", 1)[1])
+        _, token, index = (query.data or "").split(":")
+        idx = int(index)
     except Exception:
         await query.edit_message_text("无效的选择。")
         return
 
-    results = context.user_data.get(_RESULTS_KEY) or []
+    session = (context.user_data.get(_RESULTS_KEY) or {}).get(token)
+    if not session or time.monotonic() - session["created"] > 600 or session["chat_id"] != query.message.chat_id:
+        await query.edit_message_text("选择已过期，请重新 /music 搜索。")
+        return
+    results = session["results"]
     if idx < 0 or idx >= len(results):
         await query.edit_message_text("选择已过期，请重新 /music 搜索。")
         return
@@ -157,29 +176,23 @@ async def cb_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("该结果缺少可下载链接。")
         return
 
-    await query.edit_message_text(f"下载中：{title} …")
-
-    tmp_dir = Path(tempfile.mkdtemp(prefix="mayabot_music_"))
+    service = get_service(context.application)
     try:
-        info = await asyncio.to_thread(download_audio, url, tmp_dir)
-        audio_path: Path = info["path"]
+        service.submit(query.from_user.id,
+                       lambda: _download_and_reply(update, context, dict(item)))
+    except MusicBusy as exc:
+        await _safe_reply(update, str(exc))
+        return
+    await query.edit_message_text(f"已加入点歌队列：{title} …")
 
-        size = audio_path.stat().st_size
-        if size > _TG_AUDIO_LIMIT:
-            await query.edit_message_text(
-                f"《{info['title']}》文件 {size // (1024*1024)}MB，超过 Telegram 50MB 上限，无法发送。"
-            )
-            return
 
-        with open(audio_path, "rb") as fh:
-            await context.bot.send_audio(
-                chat_id=query.message.chat_id,
-                audio=fh,
-                title=info.get("title") or title,
-                performer=info.get("artist") or None,
-                duration=int(info["duration"]) if info.get("duration") else None,
-                filename=audio_path.name,
-            )
+async def _download_and_reply(update, context, item):
+    query = update.callback_query
+    url = item["url"]
+    title = item.get("title") or "(无标题)"
+    try:
+        _, info = await get_service(context.application).send_audio(
+            context.bot, url, chat_id=query.message.chat_id)
         await query.edit_message_text(f"已发送：{info.get('title') or title}")
 
         # 记录下载历史（推荐信号 + 去重依据）。
@@ -190,7 +203,7 @@ async def cb_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     user_id=user.id,
                     title=info.get("title") or title,
                     artist=info.get("artist") or "",
-                    source="youtube",
+                    source=_load_music_cfg()["provider"],
                     video_id=item.get("id") or "",
                     url=url,
                     query="",
@@ -204,9 +217,6 @@ async def cb_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"下载失败：{e}")
         except Exception:
             await _safe_reply(update, f"下载失败：{e}")
-    finally:
-        # 清理临时目录。
-        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # ── 注册 ───────────────────────────────────────────────────────────────────
